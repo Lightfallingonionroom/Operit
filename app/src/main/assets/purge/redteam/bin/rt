@@ -1,0 +1,1149 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+rt —— dsh-purge 红队工具层的最小可移植实现（零依赖，Python 3.8+）
+
+原插件里 redteam_* 是 56 个宿主工具，别的 agent 没有。
+这个脚本把它们换成同语义的 CLI 子命令，数据落 $RT_HOME/data 下的 JSON 台账，
+让「角色卡 + 技能」在没有 dsh 的环境里也能真的跑起来（落库、查重、记分、出报告）。
+
+用法：
+  export RT_HOME=/path/to/dsh-purge-portable
+  rt engage open --target "示例科技有限公司"
+  rt asset add --ip 10.0.0.5 --port 445 --service smb --provenance active --tool nmap
+  rt asset query --sort priority
+  rt vuln add --title "..." --severity high --target http://x
+  rt score hit --code server-host --points 50 --target 10.0.0.5 --evidence "..."
+  rt report
+
+约定：所有命令输出 JSON（--human 给紧凑文本）。失败退出码非 0，stderr 给原因。
+"""
+import argparse
+import fcntl
+import json
+import os
+import re
+import sys
+import time
+import hashlib
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+# RT_HOME 未显式设置时，按脚本自身位置推断（bin/rt → 包根），
+# 这样软链、复制、任意 cwd 下调用都不会把台账写到别处。
+RT_HOME = Path(os.environ.get("RT_HOME") or Path(__file__).resolve().parent.parent).resolve()
+DATA = RT_HOME / "data"
+ENG_ROOT = DATA / "eng"
+SCORE_POINTS_FILE = DATA / "score-points.json"
+
+# ────────────────────────────────────────────────────────────── 基础设施
+
+def now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def die(msg, code=2):
+    print(json.dumps({"ok": False, "error": msg}, ensure_ascii=False), file=sys.stderr)
+    sys.exit(code)
+
+
+def out(obj, human=None):
+    if HUMAN:
+        print(human if human is not None else json.dumps(obj, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+HUMAN = False
+
+
+@contextmanager
+def locked(path):
+    """读改写全程持锁，避免并发智能体互相覆盖。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lockfile = path.with_suffix(path.suffix + ".lock")
+    fh = open(lockfile, "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
+
+def read_json(path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def write_json(path, obj):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def upsert(path, key_fn, item):
+    """按 key 幂等写入；返回 (item, created)。"""
+    with locked(path):
+        rows = read_json(path, [])
+        k = key_fn(item)
+        for i, r in enumerate(rows):
+            if key_fn(r) == k:
+                merged = {**r, **{kk: vv for kk, vv in item.items() if vv not in (None, "", [], {})}}
+                merged["updated_at"] = now_iso()
+                rows[i] = merged
+                write_json(path, rows)
+                return merged, False
+        item.setdefault("created_at", now_iso())
+        item["updated_at"] = item["created_at"]
+        item["id"] = len(rows) + 1
+        rows.append(item)
+        write_json(path, rows)
+        return item, True
+
+
+# ────────────────────────────────────────────────────────────── 靶标
+
+def engagements_index():
+    return DATA / "engagements.json"
+
+
+def current_engagement(required=True):
+    idx = read_json(engagements_index(), {})
+    cur = (DATA / "current")
+    eid = cur.read_text(encoding="utf-8").strip() if cur.exists() else ""
+    if not eid or eid not in idx:
+        if required:
+            die("未绑定靶标：先跑 `rt engage open --target \"单位名称\"`")
+        return None, idx
+    return eid, idx
+
+
+def eng_dir(eid):
+    return ENG_ROOT / eid
+
+
+def eng_file(eid, name):
+    return eng_dir(eid) / name
+
+
+def slugify(text):
+    s = re.sub(r"[^0-9A-Za-z\u4e00-\u9fa5]+", "-", str(text)).strip("-")
+    return s[:60] or "eng"
+
+
+def cmd_engage(args):
+    idx = read_json(engagements_index(), {})
+    if args.action == "list":
+        cur = None
+        p = DATA / "current"
+        if p.exists():
+            cur = p.read_text(encoding="utf-8").strip()
+        out({"ok": True, "current": cur, "engagements": idx})
+        return
+    if args.action == "open":
+        if not args.target:
+            die("--target 必填")
+        # 同名复用
+        for eid, meta in idx.items():
+            if meta.get("name") == args.target:
+                (DATA / "current").parent.mkdir(parents=True, exist_ok=True)
+                (DATA / "current").write_text(eid, encoding="utf-8")
+                out({"ok": True, "reused": True, "engagement": {"id": eid, **meta}})
+                return
+        eid = "%s-%s" % (slugify(args.target), hashlib.sha1(args.target.encode()).hexdigest()[:6])
+        idx[eid] = {"name": args.target, "scope": args.scope or [], "created_at": now_iso()}
+        write_json(engagements_index(), idx)
+        eng_dir(eid).mkdir(parents=True, exist_ok=True)
+        (DATA / "current").write_text(eid, encoding="utf-8")
+        out({"ok": True, "created": True, "engagement": {"id": eid, **idx[eid]}})
+        return
+    if args.action == "info":
+        eid, idx = current_engagement()
+        out({"ok": True, "engagement": {"id": eid, **idx[eid]},
+             "stats": stats_of(eid)})
+        return
+    if args.action == "bind":
+        if not args.engagement:
+            out({"ok": True, "candidates": idx})
+            return
+        eid = args.engagement
+        if eid not in idx:
+            for k, v in idx.items():
+                if v.get("name") == eid:
+                    eid = k
+                    break
+        if eid not in idx:
+            die("靶标不存在：%s" % args.engagement)
+        (DATA / "current").write_text(eid, encoding="utf-8")
+        out({"ok": True, "engagement": {"id": eid, **idx[eid]}})
+        return
+    die("未知 action")
+
+
+# ────────────────────────────────────────────────────────────── 资产
+
+def asset_key(a):
+    return str(a.get("ip") or "").strip()
+
+
+def normalize_ports(ports):
+    norm = []
+    for p in ports or []:
+        try:
+            port = int(p.get("port"))
+        except Exception:
+            continue
+        norm.append({
+            "port": port,
+            "proto": p.get("proto") or "tcp",
+            "service": p.get("service") or "",
+            "product": p.get("product") or "",
+            "version": p.get("version") or "",
+            "banner": (p.get("banner") or "")[:400],
+            "url": p.get("url") or "",
+            "title": p.get("title") or "",
+            "provenance": p.get("provenance") or "",
+            "tool": p.get("tool") or "",
+            "fingerprints": p.get("fingerprints") or [],
+        })
+    return norm
+
+
+def merge_ports(old, new):
+    by = {p["port"]: p for p in (old or [])}
+    for p in new or []:
+        cur = by.get(p["port"], {})
+        merged = {**cur}
+        for k, v in p.items():
+            if v not in ("", None, [], {}):
+                merged[k] = v
+        by[p["port"]] = merged
+    return sorted(by.values(), key=lambda x: x["port"])
+
+
+def scope_of_ip(ip):
+    m = re.match(r"^(\d+)\.(\d+)\.", str(ip or ""))
+    if not m:
+        return "external"
+    a, b = int(m.group(1)), int(m.group(2))
+    if a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168) or a == 127 or (a == 169 and b == 254):
+        return "internal"
+    return "external"
+
+
+def cmd_asset(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "assets.json")
+    a = args.action
+    if a == "add":
+        if not args.ip:
+            die("--ip 必填")
+        ports = normalize_ports(json.loads(args.ports) if args.ports else [])
+        if args.port:
+            ports = normalize_ports([{
+                "port": args.port, "service": args.service, "product": args.product,
+                "version": args.version, "url": args.url, "title": args.title,
+                "provenance": args.provenance, "tool": args.tool,
+            }])
+        item = {
+            "ip": args.ip,
+            # 探测到端口即视为存活；只有完全没端口时才留 unknown
+            "state": args.state or ("live" if ports else "unknown"),
+            "primary_name": args.primary_name or "",
+            "provenance": args.provenance or "active",
+            "tool": args.tool or "",
+            "scope": scope_of_ip(args.ip),
+            "names": args.names or [],
+            "ports": ports,
+            "test_status": "untested",
+            "test_notes": [],
+            "blocked_count": 0,
+            "surface": "",
+        }
+        if args.discovered_at:
+            item["discovered_at"] = args.discovered_at
+        with locked(path):
+            rows = read_json(path, [])
+            for i, r in enumerate(rows):
+                if asset_key(r) == args.ip:
+                    merged = {**r}
+                    merged["state"] = item["state"] or r.get("state")
+                    merged["ports"] = merge_ports(r.get("ports"), item["ports"])
+                    for k in ("primary_name", "tool", "surface"):
+                        if item.get(k):
+                            merged[k] = item[k]
+                    merged["names"] = sorted({json.dumps(n, sort_keys=True) for n in (r.get("names") or []) + (item["names"] or [])})
+                    merged["names"] = [json.loads(n) for n in merged["names"]]
+                    merged["last_seen"] = now_iso()
+                    merged["updated_at"] = now_iso()
+                    rows[i] = merged
+                    write_json(path, rows)
+                    out({"ok": True, "created": False, "asset": merged,
+                         "hint": "已存在，只合并端口与状态；discovered_at 保持 %s" % merged.get("discovered_at")})
+                    return
+            item["discovered_at"] = item.get("discovered_at") or now_iso()
+            item["last_seen"] = item["discovered_at"]
+            item["id"] = len(rows) + 1
+            rows.append(item)
+            write_json(path, rows)
+            out({"ok": True, "created": True, "asset": item})
+        return
+
+    rows = read_json(path, [])
+
+    if a == "query":
+        q = (args.q or "").split()
+        def hit(r):
+            blob = json.dumps(r, ensure_ascii=False).lower()
+            if q and not all(t.lower() in blob for t in q):
+                return False
+            if args.port and not any(p.get("port") == args.port for p in r.get("ports") or []):
+                return False
+            if args.service and args.service.lower() not in blob:
+                return False
+            if args.scope and r.get("scope") != args.scope:
+                return False
+            if args.state and r.get("state") != args.state:
+                return False
+            if args.provenance and r.get("provenance") != args.provenance:
+                return False
+            if args.priority and (r.get("assess") or {}).get("priority") != args.priority:
+                return False
+            if args.cidr and not ip_in_cidr(r.get("ip"), args.cidr):
+                return False
+            return True
+        sel = [r for r in rows if hit(r)]
+        sort = args.sort or "priority"
+        rank = {"high": 0, "medium": 1, "low": 2, None: 3}
+        if sort == "priority":
+            sel.sort(key=lambda r: (rank.get((r.get("assess") or {}).get("priority"), 3), -len(r.get("ports") or [])))
+        elif sort == "todo":
+            sel.sort(key=lambda r: (bool((r.get("assess") or {}).get("priority")), r.get("test_status") == "tested"))
+        elif sort == "ports":
+            sel.sort(key=lambda r: -len(r.get("ports") or []))
+        elif sort == "ip":
+            sel.sort(key=lambda r: r.get("ip") or "")
+        lim = args.limit or 50
+        out({"ok": True, "total": len(sel), "returned": min(lim, len(sel)),
+             "assets": [compact_asset(r) for r in sel[:lim]]})
+        return
+
+    if a == "get":
+        for r in rows:
+            if str(r.get("id")) == str(args.id or args.ip) or r.get("ip") == (args.id or args.ip):
+                out({"ok": True, "asset": r})
+                return
+        die("资产不存在：%s" % args.id)
+
+    if a == "test":
+        for i, r in enumerate(rows):
+            if str(r.get("id")) == str(args.id or args.ip) or r.get("ip") == (args.id or args.ip):
+                if args.status:
+                    r["test_status"] = args.status
+                if args.test:
+                    r.setdefault("test_notes", []).append({"at": now_iso(), "by": args.by or "", "note": args.test})
+                if args.surface is not None:
+                    r["surface"] = args.surface
+                if args.blocked:
+                    r["blocked_count"] = int(r.get("blocked_count") or 0) + 1
+                    r["test_status"] = args.status or "blocked"
+                r["updated_at"] = now_iso()
+                rows[i] = r
+                write_json(path, rows)
+                out({"ok": True, "asset": compact_asset(r)})
+                return
+        die("资产不存在：%s" % args.id)
+
+    if a == "assess":
+        for i, r in enumerate(rows):
+            if str(r.get("id")) == str(args.id or args.ip) or r.get("ip") == (args.id or args.ip):
+                r["assess"] = {"priority": args.priority, "potential": args.potential,
+                               "reason": args.reason, "by": args.by or "", "at": now_iso()}
+                r["updated_at"] = now_iso()
+                rows[i] = r
+                write_json(path, rows)
+                out({"ok": True, "asset": compact_asset(r)})
+                return
+        die("资产不存在：%s" % args.id)
+
+    if a == "stats":
+        out({"ok": True, "stats": stats_of(eid)})
+        return
+    die("未知 action")
+
+
+def ip_in_cidr(ip, cidr):
+    try:
+        net, bits = cidr.split("/")
+        bits = int(bits)
+        to_int = lambda s: sum(int(x) << (8 * (3 - i)) for i, x in enumerate(s.split(".")))
+        mask = (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF
+        return (to_int(ip) & mask) == (to_int(net) & mask)
+    except Exception:
+        return False
+
+
+def compact_asset(r):
+    ports = [{"port": p["port"], "service": p.get("service"), "product": p.get("product"),
+              "version": p.get("version"), "url": p.get("url"), "title": p.get("title")}
+             for p in r.get("ports") or []]
+    return {"id": r.get("id"), "ip": r.get("ip"), "state": r.get("state"), "scope": r.get("scope"),
+            "primary_name": r.get("primary_name"), "ports": ports,
+            "test_status": r.get("test_status"), "priority": (r.get("assess") or {}).get("priority"),
+            "potential": (r.get("assess") or {}).get("potential"),
+            "blocked_count": r.get("blocked_count"),
+            "discovered_at": r.get("discovered_at")}
+
+
+def stats_of(eid):
+    rows = read_json(eng_file(eid, "assets.json"), [])
+    segs = {}
+    ports = 0
+    svc = {}
+    for r in rows:
+        ip = r.get("ip") or ""
+        m = re.match(r"^(\d+\.\d+\.\d+)\.", ip)
+        if m:
+            segs[m.group(1) + ".0/24"] = segs.get(m.group(1) + ".0/24", 0) + 1
+        for p in r.get("ports") or []:
+            ports += 1
+            if p.get("service"):
+                svc[p["service"]] = svc.get(p["service"], 0) + 1
+    vulns = read_json(eng_file(eid, "vulns.json"), [])
+    return {
+        "assets": len(rows),
+        "live": sum(1 for r in rows if r.get("state") == "live"),
+        "internal": sum(1 for r in rows if r.get("scope") == "internal"),
+        "external": sum(1 for r in rows if r.get("scope") == "external"),
+        "c_segments": len(segs), "segments": segs,
+        "ports": ports, "services": svc,
+        "assessed": sum(1 for r in rows if (r.get("assess") or {}).get("priority")),
+        "tested": sum(1 for r in rows if r.get("test_status") == "tested"),
+        "vulns": len(vulns),
+        "vulns_confirmed": sum(1 for v in vulns if v.get("status") in ("confirmed", "exploited")),
+        "webshells": len(read_json(eng_file(eid, "webshells.json"), [])),
+        "tunnels": len([t for t in read_json(eng_file(eid, "tunnels.json"), []) if t.get("status") == "active"]),
+        "credentials": len(read_json(eng_file(eid, "creds.json"), [])),
+        "score": score_total(eid),
+    }
+
+
+# ────────────────────────────────────────────────────────────── 漏洞
+
+def cmd_vuln(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "vulns.json")
+    a = args.action
+    if a == "add":
+        item = {"title": args.title, "severity": args.severity, "cve": args.cve or "",
+                "target": args.target or "", "evidence": args.evidence or "",
+                "confidence": args.confidence, "status": args.status or "candidate",
+                "gained": args.gained or "", "agent": args.by or "", "asset_ip": args.asset or "",
+                "source": args.source or ""}
+        row, created = upsert(path, lambda r: (r.get("title"), r.get("target"), r.get("cve")), item)
+        out({"ok": True, "created": created, "vuln": row})
+        return
+    rows = read_json(path, [])
+    if a == "query":
+        sel = rows
+        if args.status:
+            sel = [r for r in sel if r.get("status") == args.status]
+        if args.severity:
+            sel = [r for r in sel if r.get("severity") == args.severity]
+        if args.q:
+            sel = [r for r in sel if args.q.lower() in json.dumps(r, ensure_ascii=False).lower()]
+        if args.cve:
+            sel = [r for r in sel if (r.get("cve") or "").lower() == args.cve.lower()]
+        out({"ok": True, "total": len(sel), "vulns": sel[: (args.limit or 50)]})
+        return
+    if a == "update":
+        for i, r in enumerate(rows):
+            if str(r.get("id")) == str(args.id):
+                for k in ("status", "severity", "evidence", "gained", "title"):
+                    v = getattr(args, k, None)
+                    if v:
+                        r[k] = v
+                r["updated_at"] = now_iso()
+                rows[i] = r
+                write_json(path, rows)
+                out({"ok": True, "vuln": r})
+                return
+        die("漏洞不存在：%s" % args.id)
+    die("未知 action")
+
+
+# ────────────────────────────────────────────────────────────── 凭据 / 访问 / 入口
+
+def cmd_cred(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "creds.json")
+    if args.action == "add":
+        item = {"host": args.host, "username": args.username or "", "secret_value": args.secret or "",
+                "secret_type": args.type or "password", "privilege": args.privilege or "",
+                "source": args.source or "", "tool": args.tool or "",
+                "secret_ref": args.secret_ref or "", "note": args.note or "", "by": args.by or ""}
+        row, created = upsert(path, lambda r: (r.get("host"), r.get("username"), r.get("secret_value")), item)
+        out({"ok": True, "created": created, "credential": row})
+        return
+    if args.action == "list":
+        rows = read_json(path, [])
+        if args.host:
+            rows = [r for r in rows if r.get("host") == args.host]
+        out({"ok": True, "total": len(rows), "credentials": rows})
+        return
+    die("未知 action")
+
+
+def cmd_access(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "accesses.json")
+    if args.action == "add":
+        item = {"host": args.host, "method": args.method, "username": args.username or "",
+                "privilege": args.privilege or "", "note": args.note or "",
+                "session_ref": args.session_ref or "", "by": args.by or ""}
+        row, created = upsert(path, lambda r: (r.get("host"), r.get("method"), r.get("username")), item)
+        out({"ok": True, "created": created, "access": row})
+        return
+    if args.action == "list":
+        out({"ok": True, "accesses": read_json(path, [])})
+        return
+    die("未知 action")
+
+
+def cmd_webshell(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "webshells.json")
+    if args.action == "add":
+        if args.type and args.type not in ("behinder", "godzilla", "other"):
+            die("shell_type 只能是 behinder / godzilla / other")
+        if args.type == "other" and not args.note:
+            die("用 other 必须在 --note 写清为什么（用户连不上不算入口）")
+        item = {"url": args.url, "shell_type": args.type or "behinder", "pass_key": args.pass_key or "",
+                "privilege": args.privilege or "", "status": "unknown", "note": args.note or "",
+                "secret_ref": args.secret_ref or "", "by": args.by or ""}
+        row, created = upsert(path, lambda r: (r.get("url"), r.get("pass_key")), item)
+        out({"ok": True, "created": created, "webshell": row})
+        return
+    if args.action == "list":
+        out({"ok": True, "webshells": read_json(path, [])})
+        return
+    if args.action == "update":
+        rows = read_json(path, [])
+        for i, r in enumerate(rows):
+            if str(r.get("id")) == str(args.id):
+                if args.status:
+                    r["status"] = args.status
+                if args.note:
+                    r["note"] = args.note
+                if args.privilege:
+                    r["privilege"] = args.privilege
+                r["checked_at"] = now_iso()
+                rows[i] = r
+                write_json(path, rows)
+                out({"ok": True, "webshell": r})
+                return
+        die("WebShell 不存在")
+    die("未知 action")
+
+
+def cmd_tunnel(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "tunnels.json")
+    if args.action == "add":
+        if args.entry_kind not in ("target-outbound", "target-http", "target-agent", "self-only"):
+            die("entry_kind 必须是 target-outbound / target-http / target-agent / self-only")
+        legit = args.entry_kind != "self-only"
+        item = {"kind": args.kind, "listen": args.listen, "entry": args.entry or "",
+                "reach": args.reach or "", "entry_kind": args.entry_kind, "legit": legit,
+                "command": args.command or "", "status": args.status or "active",
+                "note": args.note or "", "by": args.by or ""}
+        if not legit:
+            item["note"] = (item["note"] + " ｜ 只在自己 VPS/自建服务器上，不算突破").strip(" ｜")
+        row, created = upsert(path, lambda r: (r.get("listen"), r.get("kind")), item)
+        out({"ok": True, "created": created, "tunnel": row,
+             "legit": legit,
+             "hint": "" if legit else "self-only 不算跨越靶标边界，不能记边界突破分"})
+        return
+    if args.action == "list":
+        rows = read_json(path, [])
+        if args.status:
+            rows = [r for r in rows if r.get("status") == args.status]
+        out({"ok": True, "tunnels": rows})
+        return
+    if args.action == "update":
+        rows = read_json(path, [])
+        for i, r in enumerate(rows):
+            if str(r.get("id")) == str(args.id):
+                for k in ("status", "listen", "reach", "note", "entry", "entry_kind"):
+                    v = getattr(args, k, None)
+                    if v:
+                        r[k] = v
+                if r.get("entry_kind"):
+                    r["legit"] = r["entry_kind"] != "self-only"
+                r["checked_at"] = now_iso()
+                rows[i] = r
+                write_json(path, rows)
+                out({"ok": True, "tunnel": r})
+                return
+        die("隧道不存在")
+    die("未知 action")
+
+
+def cmd_session(args):
+    eid, _ = current_engagement()
+    if args.action == "check":
+        ws = read_json(eng_file(eid, "webshells.json"), [])
+        tn = read_json(eng_file(eid, "tunnels.json"), [])
+        res = []
+        for w in ws:
+            ok, detail = probe_http(w.get("url"))
+            res.append({"type": "webshell", "url": w.get("url"), "online": ok, "detail": detail})
+            w["status"] = "online" if ok else "offline"
+            w["checked_at"] = now_iso()
+        for t in tn:
+            ok, detail = probe_tcp(t.get("listen"))
+            res.append({"type": "tunnel", "listen": t.get("listen"), "online": ok,
+                        "legit": t.get("legit"), "detail": detail})
+            if ok:
+                t["status"] = "active"
+            t["checked_at"] = now_iso()
+        write_json(eng_file(eid, "webshells.json"), ws)
+        write_json(eng_file(eid, "tunnels.json"), tn)
+        out({"ok": True, "results": res,
+             "online": sum(1 for r in res if r["online"]), "total": len(res)})
+        return
+    # 总览
+    out({"ok": True, "sessions": {
+        "webshells": read_json(eng_file(eid, "webshells.json"), []),
+        "tunnels": read_json(eng_file(eid, "tunnels.json"), []),
+        "credentials": read_json(eng_file(eid, "creds.json"), []),
+        "accesses": read_json(eng_file(eid, "accesses.json"), []),
+    }})
+
+
+def probe_http(url):
+    if not url:
+        return False, "no url"
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            code = r.getcode()
+            return code < 500, "HTTP %s" % code
+    except Exception as e:
+        return False, str(e)[:120]
+
+
+def probe_tcp(listen):
+    import socket
+    if not listen or ":" not in listen:
+        return False, "no listen"
+    host, _, port = listen.rpartition(":")
+    try:
+        with socket.create_connection((host or "127.0.0.1", int(port)), timeout=5):
+            return True, "TCP 可连"
+    except Exception as e:
+        return False, str(e)[:120]
+
+
+# ────────────────────────────────────────────────────────────── 攻击链
+
+def cmd_chain(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "chain.json")
+    if args.action == "add":
+        rows = read_json(path, [])
+        item = {"seq": args.seq or (len(rows) + 1), "stage_code": args.stage_code,
+                "title": args.title, "tool": args.tool or "", "detail": args.detail or "",
+                "result": args.result or "", "agent": args.agent or "", "target": args.target or "",
+                "evidence_ref": args.evidence_ref or "", "at": now_iso()}
+        rows.append(item)
+        write_json(path, rows)
+        out({"ok": True, "step": item, "total": len(rows)})
+        return
+    rows = read_json(path, [])
+    rows.sort(key=lambda r: (r.get("seq") or 0))
+    out({"ok": True, "steps": rows, "total": len(rows)})
+
+
+# ────────────────────────────────────────────────────────────── 记分
+
+def load_score_points():
+    pts = read_json(SCORE_POINTS_FILE, [])
+    return {p["code"]: p for p in pts}
+
+
+def score_total(eid):
+    hits = read_json(eng_file(eid, "score_hits.json"), [])
+    return {"points": sum(int(h.get("points") or 0) for h in hits if h.get("counted", True)),
+            "hits": len(hits)}
+
+
+def cmd_score(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "score_hits.json")
+    if args.action == "list":
+        pts = load_score_points()
+        hits = read_json(path, [])
+        board = []
+        for code, p in pts.items():
+            got = [h for h in hits if h.get("code") == code and h.get("counted", True)]
+            board.append({"code": code, "name": p["name"], "tier": p.get("tier"),
+                          "points": p.get("points"), "cap": p.get("cap"),
+                          "dedup": p.get("dedup"), "hits": len(got),
+                          "earned": sum(int(h.get("points") or 0) for h in got)})
+        total = sum(b["earned"] for b in board)
+        out({"ok": True, "total": total, "board": board, "hits": hits})
+        return
+    if args.action == "hit":
+        pts = load_score_points()
+        p = pts.get(args.code)
+        if not p:
+            die("未知得分点 code：%s（先跑 `rt score list` 看合法 code）" % args.code)
+        if not args.evidence:
+            die("--evidence 必填（只写结果：目标 + 拿到什么）")
+        points = args.points if args.points is not None else p.get("points") or 0
+        hits = read_json(path, [])
+        # 封顶判定
+        counted = True
+        warnings = []
+        dedup = p.get("dedup")
+        if dedup in ("system", "service", "target") and args.target:
+            key = args.target if dedup == "service" else args.target
+            same = [h for h in hits if h.get("code") == args.code and h.get("target") == key and h.get("counted", True)]
+            if same:
+                best = max(int(h.get("points") or 0) for h in same)
+                if points <= best:
+                    counted = False
+                    warnings.append("同一口径已有 %s 分命中，本条不计分（G1 只取最高）" % best)
+                else:
+                    for h in same:
+                        h["counted"] = False
+                        h["superseded_by"] = "higher-tier"
+                    warnings.append("已用更高档 %s 分顶替旧命中" % points)
+        earned = sum(int(h.get("points") or 0) for h in hits if h.get("counted", True) and h.get("code") == args.code)
+        # G3：超出上限的部分不再累加（不是只告警）。把本条裁到剩余额度，额度用尽则不计分。
+        if p.get("cap") and counted:
+            room = max(0, int(p["cap"]) - earned)
+            if points > room:
+                if room <= 0:
+                    counted = False
+                    warnings.append("该条已达上限 %s 分（已累计 %s 分）——停止信号，换条目或换资产" % (p["cap"], earned))
+                else:
+                    warnings.append("该条上限 %s 分，已累计 %s 分；本条按剩余额度 %s 分计（原 %s 分）"
+                                    % (p["cap"], earned, room, points))
+                    points = room
+        item = {"code": args.code, "name": p["name"], "points": points, "target": args.target or "",
+                "evidence": args.evidence, "counted": counted, "self_created": bool(args.self_created),
+                "vuln_id": args.vuln_id, "step_id": args.step_id, "note": args.note or "",
+                "by": args.by or "", "at": now_iso()}
+        if args.self_created:
+            item["counted"] = False
+            warnings.append("self_created=true：自己注册/自建的账号只留痕，不计分")
+        hits.append(item)
+        write_json(path, hits)
+        out({"ok": True, "hit": item, "warnings": warnings,
+             "total": sum(int(h.get("points") or 0) for h in hits if h.get("counted", True))})
+        return
+    die("未知 action")
+
+
+# ────────────────────────────────────────────────────────────── 证据 / POC / 报告
+
+def cmd_evidence(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "http_evidence.json")
+    if args.action == "add":
+        if not args.request:
+            die("--request 必填（完整原始请求，能直接粘进 Burp/Yakit）")
+        rows = read_json(path, [])
+        item = {"label": args.label or "", "url": args.url or "", "method": args.method or "GET",
+                "status": args.status, "request": args.request, "response": args.response or "",
+                "vuln_id": args.vuln_id, "note": args.note or "", "by": args.by or "", "at": now_iso()}
+        rows.append(item)
+        write_json(path, rows)
+        out({"ok": True, "evidence": item, "total": len(rows)})
+        return
+    out({"ok": True, "evidences": read_json(path, [])})
+
+
+def cmd_poc(args):
+    eid, _ = current_engagement()
+    path = eng_file(eid, "pocs.json")
+    if args.action == "add":
+        item = {"title": args.title, "code": slugify(args.title), "category": args.category or "other",
+                "component": args.component or "", "cve": args.cve or "", "severity": args.severity or "",
+                "verified": bool(args.verified), "verified_note": args.verified_note or "",
+                "usage": args.usage or "", "content": args.content or "", "source": args.source or "self",
+                "asset_target": args.asset_target or "", "by": args.by or ""}
+        row, created = upsert(path, lambda r: r.get("code"), item)
+        out({"ok": True, "created": created, "poc": row})
+        return
+    rows = read_json(path, [])
+    if args.action == "search":
+        sel = rows
+        if args.q:
+            sel = [r for r in sel if args.q.lower() in json.dumps(r, ensure_ascii=False).lower()]
+        if args.category:
+            sel = [r for r in sel if r.get("category") == args.category]
+        if args.cve:
+            sel = [r for r in sel if (r.get("cve") or "").lower() == args.cve.lower()]
+        out({"ok": True, "total": len(sel), "pocs": sel})
+        return
+    if args.action == "get":
+        for r in rows:
+            if r.get("code") == args.code or str(r.get("id")) == str(args.code):
+                out({"ok": True, "poc": r})
+                return
+        die("POC 不存在")
+    die("未知 action")
+
+
+def cmd_preflight(args):
+    """替代 redteam_preflight：检查本机工具链与关键环境变量。"""
+    import shutil
+    tools = ["nmap", "masscan", "nuclei", "ffuf", "feroxbuster", "gobuster", "dirsearch",
+             "subfinder", "dnsx", "naabu", "httpx", "hydra", "hashcat", "john", "sqlmap",
+             "fscan", "gogo", "suo5", "chisel", "frpc", "impacket-secretsdump", "msfconsole",
+             "proxychains4", "curl", "python3", "java"]
+    found, missing = {}, []
+    for t in tools:
+        p = shutil.which(t)
+        found[t] = p or ""
+        if not p:
+            missing.append(t)
+    env = {k: bool(os.environ.get(k)) for k in ["FOFA_KEY", "REDTEAM_VPS_HOST", "RT_HOME"]}
+    out({"ok": True, "tools": found, "missing": missing, "env": env,
+         "onboarding": {"complete": bool(env.get("FOFA_KEY")) and not missing,
+                        "missing": [k for k, v in env.items() if not v] + ["tool:" + m for m in missing]},
+         "hint": "缺的项一次性列给用户；FOFA 不可用就降级 crt.sh + subfinder；无 VPS 先做不需要落地的成果"})
+
+
+def cmd_report(args):
+    eid, idx = current_engagement()
+    meta = idx.get(eid, {})
+    hits = [h for h in read_json(eng_file(eid, "score_hits.json"), []) if h.get("counted", True)]
+    steps = read_json(eng_file(eid, "chain.json"), [])
+    vulns = read_json(eng_file(eid, "vulns.json"), [])
+    ev = read_json(eng_file(eid, "http_evidence.json"), [])
+    creds = read_json(eng_file(eid, "creds.json"), [])
+    ws = read_json(eng_file(eid, "webshells.json"), [])
+    tn = read_json(eng_file(eid, "tunnels.json"), [])
+    st = stats_of(eid)
+    L = []
+    L.append("# 攻击得分链路复现报告")
+    L.append("")
+    L.append("- 靶标：%s（`%s`）" % (meta.get("name", eid), eid))
+    L.append("- 生成时间：%s" % now_iso())
+    L.append("- 总分：**%d**（%d 条计分命中）" % (st["score"]["points"], len(hits)))
+    L.append("- 资产：%d（存活 %d / 内网 %d / C 段 %d）｜漏洞：%d（确认及以上 %d）"
+             % (st["assets"], st["live"], st["internal"], st["c_segments"], st["vulns"], st["vulns_confirmed"]))
+    L.append("")
+    L.append("## 一、得分明细（只收录真正拿到分的）")
+    _seen_steps = {}
+    if not hits:
+        L.append("")
+        L.append("_暂无得分命中。_")
+    for i, h in enumerate(hits, 1):
+        L.append("")
+        L.append("### %d. %s — %s 分" % (i, h.get("name"), h.get("points")))
+        L.append("")
+        L.append("- 得分点：`%s`" % h.get("code"))
+        L.append("- 目标：`%s`" % h.get("target"))
+        L.append("- 结果：%s" % h.get("evidence"))
+        if h.get("note"):
+            L.append("- 备注：%s" % h["note"])
+        def _rel(s, h):
+            a, b = str(s.get("target") or ""), str(h.get("target") or "")
+            if not a or not b:
+                return False
+            return a == b or b.startswith(a) or a.startswith(b)
+        rel = [s for s in steps if _rel(s, h)]
+        sig = tuple(x.get("seq") for x in rel)
+        if rel and sig in _seen_steps:
+            L.append("")
+            L.append("_关联步骤与「%s」相同，不再重复列出_" % _seen_steps[sig])
+            rel = []
+        elif rel:
+            _seen_steps[sig] = h.get("name")
+        if rel:
+            L.append("")
+            L.append("| # | 阶段 | 做了什么 | 命令 | 结果 |")
+            L.append("|---|---|---|---|---|")
+            for s in rel[:8]:
+                L.append("| %s | %s | %s | `%s` | %s |" % (
+                    s.get("seq"), s.get("stage_code"), s.get("title"),
+                    (s.get("tool") or "").replace("|", "\\|")[:160],
+                    (s.get("result") or "").replace("|", "\\|")[:120]))
+        rel_ev = [e for e in ev if h.get("vuln_id") and e.get("vuln_id") == h.get("vuln_id")]
+        for e in rel_ev[:2]:
+            L.append("")
+            L.append("原始请求（`%s`，HTTP %s）：" % (e.get("label"), e.get("status")))
+            L.append("")
+            L.append("```http")
+            L.append(e.get("request", ""))
+            L.append("```")
+    L.append("")
+    L.append("## 二、攻击链")
+    L.append("")
+    if steps:
+        L.append("| # | 阶段 | 角色 | 动作 | 命令 | 回显 |")
+        L.append("|---|---|---|---|---|---|")
+        for s in sorted(steps, key=lambda x: x.get("seq") or 0):
+            L.append("| %s | %s | %s | %s | `%s` | %s |" % (
+                s.get("seq"), s.get("stage_code"), s.get("agent") or "-", s.get("title"),
+                (s.get("tool") or "").replace("|", "\\|")[:160],
+                (s.get("result") or "").replace("|", "\\|")[:120]))
+    else:
+        L.append("_暂无步骤记录。_")
+    L.append("")
+    L.append("## 三、已获入口与凭据")
+    L.append("")
+    if ws:
+        L.append("**WebShell**")
+        for w in ws:
+            L.append("- `%s` ｜ %s ｜ pass=%s ｜ %s ｜ %s" % (w.get("url"), w.get("shell_type"),
+                                                            w.get("pass_key"), w.get("privilege"), w.get("status")))
+    if tn:
+        L.append("")
+        L.append("**隧道**")
+        for t in tn:
+            tag = "" if t.get("legit") else " ｜ **不算突破（self-only）**"
+            L.append("- `%s` ｜ %s ｜ 可达 %s ｜ %s ｜ %s%s" % (t.get("listen"), t.get("kind"), t.get("reach"),
+                                                          t.get("entry_kind"), t.get("status"), tag))
+    if creds:
+        L.append("")
+        L.append("**凭据**")
+        L.append("")
+        L.append("| 主机 | 账号 | 口令/密钥 | 权限 | 来源 |")
+        L.append("|---|---|---|---|---|")
+        for c in creds:
+            L.append("| %s | %s | `%s` | %s | %s |" % (
+                c.get("host") or "-", c.get("username") or "-",
+                c.get("secret_value") or "(无凭据/未授权)", c.get("privilege") or "-", c.get("source") or "-"))
+    L.append("")
+    L.append("## 四、已验证漏洞")
+    L.append("")
+    conf = [v for v in vulns if v.get("status") in ("confirmed", "exploited")]
+    if conf:
+        L.append("| 漏洞 | 等级 | 目标 | 拿到什么 | 状态 |")
+        L.append("|---|---|---|---|---|")
+        for v in conf:
+            L.append("| %s | %s | `%s` | %s | %s |" % (v.get("title"), v.get("severity"), v.get("target"),
+                                                     v.get("gained") or "-", v.get("status")))
+    else:
+        L.append("_暂无已验证漏洞。_")
+    md = "\n".join(L)
+    outp = eng_dir(eid) / "report.md"
+    outp.write_text(md, encoding="utf-8")
+    if args.markdown:
+        print(md)
+    else:
+        out({"ok": True, "path": str(outp), "bytes": len(md.encode()),
+             "score": st["score"], "hits": len(hits), "steps": len(steps)})
+
+
+# ────────────────────────────────────────────────────────────── 入口
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="rt", description="dsh-purge 可移植红队工具层")
+    p.add_argument("--human", action="store_true", help="紧凑文本输出")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    e = sub.add_parser("engage", help="靶标")
+    e.add_argument("action", choices=["open", "list", "info", "bind"])
+    e.add_argument("--target")
+    e.add_argument("--scope", nargs="*")
+    e.add_argument("--engagement")
+    e.set_defaults(func=cmd_engage)
+
+    a = sub.add_parser("asset", help="资产台账")
+    a.add_argument("action", choices=["add", "query", "get", "test", "assess", "stats"])
+    a.add_argument("--ip")
+    a.add_argument("--id")
+    a.add_argument("--port", type=int)
+    a.add_argument("--ports", help="JSON 数组：[{port,service,product,version,url,title}]")
+    a.add_argument("--service")
+    a.add_argument("--product")
+    a.add_argument("--version")
+    a.add_argument("--url")
+    a.add_argument("--title")
+    a.add_argument("--state")
+    a.add_argument("--primary-name")
+    a.add_argument("--provenance", choices=["passive", "active"])
+    a.add_argument("--tool")
+    a.add_argument("--names", nargs="*", help="域名列表")
+    a.add_argument("--discovered-at")
+    a.add_argument("--q")
+    a.add_argument("--scope", choices=["internal", "external"])
+    a.add_argument("--cidr")
+    a.add_argument("--priority", choices=["high", "medium", "low"])
+    a.add_argument("--sort", choices=["priority", "todo", "ports", "ip"])
+    a.add_argument("--limit", type=int)
+    a.add_argument("--status", choices=["untested", "testing", "tested", "blocked", "abandoned", "no_surface"])
+    a.add_argument("--test")
+    a.add_argument("--surface")
+    a.add_argument("--blocked", action="store_true")
+    a.add_argument("--potential")
+    a.add_argument("--reason")
+    a.add_argument("--by")
+    a.set_defaults(func=cmd_asset)
+
+    v = sub.add_parser("vuln", help="漏洞台账")
+    v.add_argument("action", choices=["add", "query", "update"])
+    v.add_argument("--id")
+    v.add_argument("--title")
+    v.add_argument("--severity", choices=["critical", "high", "medium", "low", "info"])
+    v.add_argument("--cve")
+    v.add_argument("--target")
+    v.add_argument("--asset")
+    v.add_argument("--evidence")
+    v.add_argument("--gained")
+    v.add_argument("--confidence", type=float, default=0.8)
+    v.add_argument("--status", choices=["candidate", "confirmed", "false-positive", "exploited", "fixed"])
+    v.add_argument("--source")
+    v.add_argument("--q")
+    v.add_argument("--limit", type=int)
+    v.add_argument("--by")
+    v.set_defaults(func=cmd_vuln)
+
+    c = sub.add_parser("cred", help="凭据")
+    c.add_argument("action", choices=["add", "list"])
+    c.add_argument("--host")
+    c.add_argument("--username")
+    c.add_argument("--secret")
+    c.add_argument("--type")
+    c.add_argument("--privilege")
+    c.add_argument("--source")
+    c.add_argument("--tool")
+    c.add_argument("--secret-ref")
+    c.add_argument("--note")
+    c.add_argument("--by")
+    c.set_defaults(func=cmd_cred)
+
+    ac = sub.add_parser("access", help="访问会话")
+    ac.add_argument("action", choices=["add", "list"])
+    ac.add_argument("--host")
+    ac.add_argument("--method")
+    ac.add_argument("--username")
+    ac.add_argument("--privilege")
+    ac.add_argument("--note")
+    ac.add_argument("--session-ref")
+    ac.add_argument("--by")
+    ac.set_defaults(func=cmd_access)
+
+    w = sub.add_parser("webshell", help="WebShell")
+    w.add_argument("action", choices=["add", "list", "update"])
+    w.add_argument("--id")
+    w.add_argument("--url")
+    w.add_argument("--type", choices=["behinder", "godzilla", "other"])
+    w.add_argument("--pass-key")
+    w.add_argument("--privilege")
+    w.add_argument("--note")
+    w.add_argument("--secret-ref")
+    w.add_argument("--status", choices=["online", "offline", "dead", "unknown"])
+    w.add_argument("--by")
+    w.set_defaults(func=cmd_webshell)
+
+    t = sub.add_parser("tunnel", help="隧道")
+    t.add_argument("action", choices=["add", "list", "update"])
+    t.add_argument("--id")
+    t.add_argument("--kind", choices=["suo5", "socks5", "ssh-r", "frp", "chisel", "other"])
+    t.add_argument("--listen")
+    t.add_argument("--entry")
+    t.add_argument("--reach")
+    t.add_argument("--entry-kind", choices=["target-outbound", "target-http", "target-agent", "self-only"])
+    t.add_argument("--command")
+    t.add_argument("--status", choices=["active", "down", "closed", "unknown"])
+    t.add_argument("--note")
+    t.add_argument("--by")
+    t.set_defaults(func=cmd_tunnel)
+
+    s = sub.add_parser("session", help="会话总览 / 连通性")
+    s.add_argument("action", choices=["check", "list"])
+    s.set_defaults(func=cmd_session)
+
+    ch = sub.add_parser("chain", help="攻击链")
+    ch.add_argument("action", choices=["add", "list"])
+    ch.add_argument("--seq", type=int)
+    ch.add_argument("--stage-code", choices=["recon", "internet", "boundary", "internal", "target"])
+    ch.add_argument("--title")
+    ch.add_argument("--tool")
+    ch.add_argument("--detail")
+    ch.add_argument("--result")
+    ch.add_argument("--agent")
+    ch.add_argument("--target")
+    ch.add_argument("--evidence-ref")
+    ch.set_defaults(func=cmd_chain)
+
+    sc = sub.add_parser("score", help="记分")
+    sc.add_argument("action", choices=["list", "hit"])
+    sc.add_argument("--code")
+    sc.add_argument("--points", type=int)
+    sc.add_argument("--target")
+    sc.add_argument("--evidence")
+    sc.add_argument("--note")
+    sc.add_argument("--vuln-id", type=int)
+    sc.add_argument("--step-id", type=int)
+    sc.add_argument("--self-created", action="store_true")
+    sc.add_argument("--by")
+    sc.set_defaults(func=cmd_score)
+
+    evp = sub.add_parser("evidence", help="HTTP 原始请求证据")
+    evp.add_argument("action", choices=["add", "list"])
+    evp.add_argument("--label")
+    evp.add_argument("--url")
+    evp.add_argument("--method")
+    evp.add_argument("--status", type=int)
+    evp.add_argument("--request")
+    evp.add_argument("--response")
+    evp.add_argument("--vuln-id", type=int)
+    evp.add_argument("--note")
+    evp.add_argument("--by")
+    evp.set_defaults(func=cmd_evidence)
+
+    poc = sub.add_parser("poc", help="POC 知识库")
+    poc.add_argument("action", choices=["add", "search", "get"])
+    poc.add_argument("--title")
+    poc.add_argument("--code")
+    poc.add_argument("--category")
+    poc.add_argument("--component")
+    poc.add_argument("--cve")
+    poc.add_argument("--severity")
+    poc.add_argument("--verified", action="store_true")
+    poc.add_argument("--verified-note")
+    poc.add_argument("--usage")
+    poc.add_argument("--content")
+    poc.add_argument("--source")
+    poc.add_argument("--asset-target")
+    poc.add_argument("--q")
+    poc.add_argument("--by")
+    poc.set_defaults(func=cmd_poc)
+
+    pf = sub.add_parser("preflight", help="工具链与环境自检")
+    pf.set_defaults(func=cmd_preflight)
+
+    rp = sub.add_parser("report", help="生成复现报告")
+    rp.add_argument("--markdown", action="store_true")
+    rp.set_defaults(func=cmd_report)
+
+    return p
+
+
+def main():
+    global HUMAN
+    args = build_parser().parse_args()
+    HUMAN = getattr(args, "human", False)
+    DATA.mkdir(parents=True, exist_ok=True)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

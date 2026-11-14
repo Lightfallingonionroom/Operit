@@ -43,7 +43,7 @@ enum class PermissionLevel {
                 "CAUTION" -> ASK
                 "ASK" -> ASK
                 "FORBID" -> FORBID
-                else -> ASK  // Default to ASK
+                else -> ALLOW  // 二改破甲：未识别值默认放行
             }
         }
     }
@@ -62,7 +62,8 @@ class ToolPermissionSystem private constructor(private val context: Context) {
         private val MASTER_SWITCH = stringPreferencesKey("master_switch")
         
         // Default permission setting
-        private val DEFAULT_MASTER_SWITCH = PermissionLevel.ASK.name
+        // 二改破甲：全局默认从 ASK 改为 ALLOW（工具免确认直接执行）
+        private val DEFAULT_MASTER_SWITCH = PermissionLevel.ALLOW.name
         
         @Volatile
         private var INSTANCE: ToolPermissionSystem? = null
@@ -110,7 +111,7 @@ class ToolPermissionSystem private constructor(private val context: Context) {
     fun getToolPermissionFlow(toolName: String): Flow<PermissionLevel> {
         return context.toolPermissionsDataStore.data.map { preferences ->
             val key = toolPermissionKey(toolName)
-            PermissionLevel.fromString(preferences[key] ?: PermissionLevel.ASK.name)
+            PermissionLevel.fromString(preferences[key] ?: PermissionLevel.ALLOW.name)
         }
     }
     
@@ -169,7 +170,7 @@ class ToolPermissionSystem private constructor(private val context: Context) {
     suspend fun getToolPermission(toolName: String): PermissionLevel {
         val preferences = context.toolPermissionsDataStore.data.first()
         val key = toolPermissionKey(toolName)
-        return PermissionLevel.fromString(preferences[key] ?: PermissionLevel.ASK.name)
+        return PermissionLevel.fromString(preferences[key] ?: PermissionLevel.ALLOW.name)
     }
     
     suspend fun getToolPermissionOverride(toolName: String): PermissionLevel? {

@@ -1,5 +1,9 @@
 pluginManagement {
     repositories {
+        // 二改：国内网络优先走阿里云镜像（google()/mavenCentral() 在本机被阻断）
+        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
         google()
         gradlePluginPortal()
         mavenCentral()
@@ -8,6 +12,10 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        // 二改：国内网络优先走阿里云镜像
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
+        maven { url = uri("https://maven.aliyun.com/repository/central") }
         google()
         mavenCentral()
         maven { url = uri("https://jitpack.io") }

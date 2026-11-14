@@ -359,6 +359,7 @@ val syncMainAssets by tasks.registering(Sync::class) {
 android {
     namespace = "com.ai.assistance.operit"
     compileSdk = 36
+    ndkVersion = "28.2.13676358"
 
     sourceSets {
         getByName("main") {
@@ -394,11 +395,12 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.ai.assistance.operit"
+        // 二改包名：Lightfallingonionroom Operit（破甲 + zfx-emperor + dsh-purge）
+        applicationId = "io.github.lightfallingonionroom.operit_app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 53
-        versionName = "1.12.2+2"
+        versionCode = 54
+        versionName = "1.12.2-purge"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -433,9 +435,9 @@ android {
             }
         }
         debug {
-            applicationIdSuffix = ".debug"
+            // 二改：不加后缀，保证包名就是 io.github.lightfallingonionroom.operit_app
             signingConfig = signingConfigs.getByName("debug")
-            resValue("string", "app_name", "Operit Debug")
+            resValue("string", "app_name", "Operit")
         }
         create("clone") {
             initWith(getByName("debug"))

@@ -4,6 +4,7 @@ import android.content.Context
 import com.ai.assistance.operit.core.chat.hooks.buildActivePromptHookMetadata
 import com.ai.assistance.operit.core.chat.hooks.PromptHookContext
 import com.ai.assistance.operit.core.chat.hooks.PromptHookRegistry
+import com.ai.assistance.operit.core.config.PurgePrompt
 
 /**
  * Utility class for processing user input
@@ -43,6 +44,7 @@ object InputProcessor {
                     processedInput = processedInput
                 )
             )
-        return afterContext.processedInput ?: processedInput
+        // 二改：唤醒词确认（zfx-emperor）
+        return PurgePrompt.applyWakeHint(afterContext.processedInput ?: processedInput)
     }
 }

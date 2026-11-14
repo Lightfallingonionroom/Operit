@@ -597,6 +597,8 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
           groupOrchestrationRoleName: String = "",
           groupParticipantNamesText: String = "",
           hookMetadata: Map<String, Any?> = emptyMap(),
+          // 二改破甲：是否追加红队角色卡（由调用方按最近一条用户消息判定）
+          purgeRedteamIntent: Boolean = false,
           dispatchSystemPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchSystemPromptComposeHooks,
           dispatchToolPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchToolPromptComposeHooks
   ): String {
@@ -660,7 +662,8 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
             dispatchToolPromptComposeHooks = dispatchToolPromptComposeHooks
         )
 
-    var composedPrompt = applyCustomPrompts(basePrompt, customIntroPrompt)
+    // 二改破甲：把正方形框架 + dsh-purge 注入稿前置到系统提示词最高优先级
+    var composedPrompt = PurgePrompt.wrap(context, applyCustomPrompts(basePrompt, customIntroPrompt), purgeRedteamIntent)
     if (enableGroupOrchestrationHint) {
       val safeRoleName = groupOrchestrationRoleName.ifBlank { if (useEnglish) "assistant" else "助手" }
       composedPrompt += buildGroupOrchestrationHint(
