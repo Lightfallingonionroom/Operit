@@ -8,9 +8,9 @@ import java.io.File
 /**
  * 二改内置资源落地：把 APK assets 里的红队技能与 rt 工具层铺到 Operit 的外部目录。
  *
- *   assets/purge/skills/*          -> /sdcard/Download/Operit/skills/*
- *   assets/purge/redteam/bin/rt    -> /sdcard/Download/Operit/redteam/bin/rt
- *   assets/purge/redteam/data/*    -> /sdcard/Download/Operit/redteam/data/*
+ *   assets/purge/skills 目录        -> /sdcard/Download/Operit/skills
+ *   assets/purge/redteam/bin/rt      -> /sdcard/Download/Operit/redteam/bin/rt
+ *   assets/purge/redteam/data 目录   -> /sdcard/Download/Operit/redteam/data
  *
  * 全部 best-effort：没有外部存储权限时静默跳过，不影响应用启动。
  */
