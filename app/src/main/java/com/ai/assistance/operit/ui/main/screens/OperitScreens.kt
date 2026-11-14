@@ -817,9 +817,9 @@ sealed class Screen(
         }
     }
 
-    // 二改破甲：面板 + 三层提示词开关
+    // 二改破甲控制台：侧边栏「破甲」入口 + 标签页 + 操作按钮
     data object PurgeSettings :
-            Screen(navItem = NavItem.Settings, titleRes = R.string.screen_title_purge_settings) {
+            Screen(navItem = NavItem.Purge, titleRes = R.string.screen_title_purge_settings) {
         @Composable
         override fun Content(
                 navController: NavController,

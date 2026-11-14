@@ -8587,4 +8587,27 @@
     <string name="purge_item_redteam_desc">Appended on red-team intent (roles / phases / 25 scoring rules)</string>
     <string name="purge_item_permission">Tool permissions default to ALLOW</string>
     <string name="purge_item_permission_desc">Source-level: ToolPermissionSystem default ALLOW (not toggleable here)</string>
+    <!-- 二改破甲控制台 -->
+    <string name="nav_purge">Purge</string>
+    <string name="purge_console_title">Purge</string>
+    <string name="purge_console_subtitle">Prompt layers / status / version</string>
+    <string name="purge_tab_status">Status</string>
+    <string name="purge_tab_prompt">Prompts</string>
+    <string name="purge_tab_skills">Skills</string>
+    <string name="purge_tab_version">Version</string>
+    <string name="purge_action_apply">Apply</string>
+    <string name="purge_action_restore">Restore</string>
+    <string name="purge_action_restart">Restart</string>
+    <string name="purge_action_uninstall">Uninstall</string>
+    <string name="purge_action_refresh">Refresh</string>
+    <string name="purge_status_permission">Tool permission default</string>
+    <string name="purge_status_permission_value">ALLOW (source-level)</string>
+    <string name="purge_status_prompt_layer">Prompt layers</string>
+    <string name="purge_status_on">ON</string>
+    <string name="purge_status_off">OFF</string>
+    <string name="purge_action_applied">Applied: takes effect on the next turn</string>
+    <string name="purge_action_restored">Restored defaults (all layers on)</string>
+    <string name="purge_action_uninstalled">All purge layers disabled</string>
+    <string name="purge_skills_installed">Skills installed</string>
+    <string name="purge_rt_path">rt toolchain</string>
 </resources>

@@ -8575,4 +8575,27 @@
     <string name="purge_item_redteam_desc">命中红队意图时追加（六角色 / 五阶段 / 25 条得分）</string>
     <string name="purge_item_permission">工具权限默认放行</string>
     <string name="purge_item_permission_desc">源码级：ToolPermissionSystem 全局默认 ALLOW（不可在面板切换）</string>
+    <!-- 二改破甲控制台 -->
+    <string name="nav_purge">破甲</string>
+    <string name="purge_console_title">Purge</string>
+    <string name="purge_console_subtitle">提示词层开关 / 状态 / 版本</string>
+    <string name="purge_tab_status">状态</string>
+    <string name="purge_tab_prompt">提示词</string>
+    <string name="purge_tab_skills">技能</string>
+    <string name="purge_tab_version">版本</string>
+    <string name="purge_action_apply">应用</string>
+    <string name="purge_action_restore">还原</string>
+    <string name="purge_action_restart">重启</string>
+    <string name="purge_action_uninstall">卸载</string>
+    <string name="purge_action_refresh">刷新</string>
+    <string name="purge_status_permission">工具权限默认</string>
+    <string name="purge_status_permission_value">允许（源码级）</string>
+    <string name="purge_status_prompt_layer">提示词层</string>
+    <string name="purge_status_on">已开启</string>
+    <string name="purge_status_off">已关闭</string>
+    <string name="purge_action_applied">已应用：新对话生效</string>
+    <string name="purge_action_restored">已恢复默认（三层全开）</string>
+    <string name="purge_action_uninstalled">已关闭全部破甲层</string>
+    <string name="purge_skills_installed">已安装技能</string>
+    <string name="purge_rt_path">rt 工具层</string>
 </resources>

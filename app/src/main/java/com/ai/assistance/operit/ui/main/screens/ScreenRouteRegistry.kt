@@ -157,6 +157,15 @@ object ScreenRouteRegistry {
                 icon = NavItem.Workflow.icon,
                 order = 30
             ),
+            // 二改破甲控制台：侧边栏「工具」分组下的「破甲」入口
+            hostEntryDefinition(
+                entryId = "main.purge",
+                screen = Screen.PurgeSettings,
+                surface = NavigationSurface.MAIN_SIDEBAR_TOOLS,
+                launchNavItem = NavItem.Purge,
+                icon = NavItem.Purge.icon,
+                order = 40
+            ),
             hostEntryDefinition(
                 entryId = "main.settings",
                 screen = Screen.Settings,
