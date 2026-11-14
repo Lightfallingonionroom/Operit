@@ -28,6 +28,7 @@ import com.ai.assistance.operit.plugins.lifecycle.AppLifecycleEvent
 import com.ai.assistance.operit.plugins.lifecycle.AppLifecycleHookParams
 import com.ai.assistance.operit.plugins.lifecycle.AppLifecycleHookPluginRegistry
 import com.ai.assistance.operit.core.config.SystemPromptConfig
+import com.ai.assistance.operit.core.config.PurgeBootstrap
 import com.ai.assistance.operit.core.tools.AIToolHandler
 import com.ai.assistance.operit.core.tools.system.AndroidShellExecutor
 import com.ai.assistance.operit.core.tools.system.Terminal
@@ -167,6 +168,8 @@ class OperitApplication : Application(), ImageLoaderFactory, WorkConfiguration.P
         }
 
         AppLogger.d(TAG, "【启动计时】应用启动开始")
+        // 二改破甲：把内置的红队技能与 rt 工具层铺到 Operit 外部目录（best-effort）
+        PurgeBootstrap.installAsync(applicationContext)
         AppLogger.d(TAG, "【启动计时】实例初始化完成 - ${System.currentTimeMillis() - startTime}ms")
 
         launchCleanOnExitCleanup()

@@ -359,7 +359,7 @@ val syncMainAssets by tasks.registering(Sync::class) {
 android {
     namespace = "com.ai.assistance.operit"
     compileSdk = 36
-    ndkVersion = "28.2.13676358"
+    ndkVersion = "27.0.12077973"
 
     sourceSets {
         getByName("main") {

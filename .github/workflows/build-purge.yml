@@ -1,0 +1,67 @@
+name: build-purge
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ purge ]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      ANDROID_HOME: /usr/local/lib/android-sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android-sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装构建工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build unzip
+
+      - name: 安装 Android SDK / 单个 NDK
+        run: |
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          curl -sL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"
+          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" "platforms;android-36" "build-tools;36.1.0" \
+            "ndk;27.0.12077973" "cmake;3.22.1"
+
+      - name: 准备仓库外的原生库（ripgrep .so + ffmpeg-kit AAR）
+        run: |
+          # 官方 release APK 里取出 liboperit_ripgrep.so
+          curl -sL -o /tmp/opk.apk https://github.com/AAswordman/Operit/releases/download/v1.12.2/app-release.apk
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          unzip -j -o /tmp/opk.apk lib/arm64-v8a/liboperit_ripgrep.so -d app/src/main/jniLibs/arm64-v8a/
+          rm -f /tmp/opk.apk
+          # ffmpeg-kit AAR（阿里云镜像）
+          curl -sL -o app/libs/ffmpeg-kit-local.aar \
+            https://maven.aliyun.com/repository/central/com/arthenica/ffmpeg-kit-full/6.0-2/ffmpeg-kit-full-6.0-2.aar
+          ls -la app/src/main/jniLibs/arm64-v8a/ app/libs/
+
+      - name: STT 模型改回 huggingface（CI 可直连）
+        run: sed -i 's#https://hf-mirror.com/#https://huggingface.co/#g' app/config/stt-model-assets.properties
+
+      - name: 构建 debug APK
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          ./gradlew :app:assembleDebug --stacktrace
+
+      - name: 上传 APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operit-purge-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
