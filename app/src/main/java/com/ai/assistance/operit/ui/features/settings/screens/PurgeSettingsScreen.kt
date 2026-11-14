@@ -171,7 +171,10 @@ fun PurgeSettingsScreen(navigateBack: () -> Unit) {
                 Text(stringResource(R.string.purge_action_uninstall), maxLines = 1)
             }
             OutlinedButton(onClick = {
-                runCatching { settings = PurgeSettingsStore.load(context) }
+                scope.launch {
+                    runCatching { settings = PurgeSettingsStore.load(context) }
+                        .onFailure { AppLogger.e("PurgeConsole", "刷新破甲设置失败", it) }
+                }
                 toast = null
             }, modifier = Modifier.weight(1f)) {
                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.width(16.dp))
