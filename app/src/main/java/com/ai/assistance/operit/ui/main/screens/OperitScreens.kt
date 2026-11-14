@@ -64,6 +64,7 @@ import com.ai.assistance.operit.ui.features.settings.screens.SettingsScreen
 import com.ai.assistance.operit.ui.features.settings.screens.SpeechServicesSettingsScreen
 import com.ai.assistance.operit.ui.features.settings.screens.ThemeSettingsScreen
 import com.ai.assistance.operit.ui.features.settings.screens.ToolPermissionSettingsScreen
+import com.ai.assistance.operit.ui.features.settings.screens.PurgeSettingsScreen
 import com.ai.assistance.operit.ui.features.settings.screens.MnnModelDownloadScreen
 import com.ai.assistance.operit.ui.features.settings.screens.UserPreferencesSettingsScreen
 import com.ai.assistance.operit.ui.features.tokenstats.TokenUsageStatisticsScreen
@@ -602,6 +603,7 @@ sealed class Screen(
             SettingsScreen(
                     navigateToUserPreferences = { navigateTo(UserPreferencesSettings) },
                     navigateToToolPermissions = { navigateTo(ToolPermission) },
+                    navigateToPurgeSettings = { navigateTo(PurgeSettings) },
                     navigateToGitHubAccount = { navigateTo(GitHubAccount) },
                     navigateToModelConfig = { navigateTo(ModelConfig) },
                     navigateToThemeSettings = { navigateTo(ThemeSettings) },
@@ -812,6 +814,23 @@ sealed class Screen(
                 onGestureConsumed: (Boolean) -> Unit
         ) {
             ToolPermissionSettingsScreen(navigateBack = onGoBack)
+        }
+    }
+
+    // 二改破甲：面板 + 三层提示词开关
+    data object PurgeSettings :
+            Screen(navItem = NavItem.Settings, titleRes = R.string.screen_title_purge_settings) {
+        @Composable
+        override fun Content(
+                navController: NavController,
+                navigateTo: ScreenNavigationHandler,
+                onGoBack: () -> Unit,
+                hasBackgroundImage: Boolean,
+                onLoading: (Boolean) -> Unit,
+                onError: (String) -> Unit,
+                onGestureConsumed: (Boolean) -> Unit
+        ) {
+            PurgeSettingsScreen(navigateBack = onGoBack)
         }
     }
 

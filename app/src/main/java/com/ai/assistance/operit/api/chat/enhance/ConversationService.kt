@@ -12,6 +12,7 @@ import com.ai.assistance.operit.core.chat.hooks.buildActivePromptHookMetadata
 import com.ai.assistance.operit.core.chat.hooks.toPromptTurns
 import com.ai.assistance.operit.core.config.SystemPromptConfig
 import com.ai.assistance.operit.core.config.PurgePrompt
+import com.ai.assistance.operit.data.preferences.PurgeSettingsStore
 import com.ai.assistance.operit.core.tools.climode.ToolExposureMode
 import com.ai.assistance.operit.R
 import com.ai.assistance.operit.core.tools.AIToolHandler
@@ -597,6 +598,7 @@ class ConversationService(
                     groupParticipantNamesText = groupParticipantNamesText.orEmpty(),
                     hookMetadata = activePromptMetadata,
                     purgeRedteamIntent = PurgePrompt.isRedteamIntent(effectiveChatHistory),
+                    purgeSettings = PurgeSettingsStore.load(context),
                     dispatchSystemPromptComposeHooks = dispatchSystemPromptComposeHooks,
                     dispatchToolPromptComposeHooks = dispatchToolPromptComposeHooks
                 )

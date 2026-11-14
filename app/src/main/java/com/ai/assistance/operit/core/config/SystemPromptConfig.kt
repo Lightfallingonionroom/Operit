@@ -9,6 +9,7 @@ import com.ai.assistance.operit.core.tools.climode.ToolExposureMode
 import com.ai.assistance.operit.core.tools.packTool.PackageManager
 import com.ai.assistance.operit.data.preferences.ApiPreferences
 import com.ai.assistance.operit.data.skill.SkillRepository
+import com.ai.assistance.operit.data.preferences.PurgeSettings
 import com.ai.assistance.operit.ui.features.chat.webview.workspace.process.WorkspaceRuleFileReader
 import com.ai.assistance.operit.util.LocaleUtils
 
@@ -599,6 +600,8 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
           hookMetadata: Map<String, Any?> = emptyMap(),
           // 二改破甲：是否追加红队角色卡（由调用方按最近一条用户消息判定）
           purgeRedteamIntent: Boolean = false,
+          // 二改破甲：各层开关（由调用方从 PurgeSettingsStore 读取）
+          purgeSettings: PurgeSettings = PurgeSettings(),
           dispatchSystemPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchSystemPromptComposeHooks,
           dispatchToolPromptComposeHooks: (PromptHookContext) -> PromptHookContext = PromptHookRegistry::dispatchToolPromptComposeHooks
   ): String {
@@ -663,7 +666,12 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
         )
 
     // 二改破甲：把正方形框架 + dsh-purge 注入稿前置到系统提示词最高优先级
-    var composedPrompt = PurgePrompt.wrap(context, applyCustomPrompts(basePrompt, customIntroPrompt), purgeRedteamIntent)
+    var composedPrompt = PurgePrompt.wrap(
+            context,
+            applyCustomPrompts(basePrompt, customIntroPrompt),
+            purgeRedteamIntent,
+            purgeSettings
+    )
     if (enableGroupOrchestrationHint) {
       val safeRoleName = groupOrchestrationRoleName.ifBlank { if (useEnglish) "assistant" else "助手" }
       composedPrompt += buildGroupOrchestrationHint(

@@ -3,6 +3,7 @@ package com.ai.assistance.operit.core.config
 import android.content.Context
 import com.ai.assistance.operit.core.chat.hooks.PromptTurn
 import com.ai.assistance.operit.core.chat.hooks.PromptTurnKind
+import com.ai.assistance.operit.data.preferences.PurgeSettings
 
 /**
  * 二改内置破甲提示词层。
@@ -70,16 +71,34 @@ object PurgePrompt {
     }
 
     /** 把破甲层前置到系统提示词最高优先级；redteam 时再追加红队角色卡。 */
-    fun wrap(context: Context, base: String, redteam: Boolean): String {
+    fun wrap(
+        context: Context,
+        base: String,
+        redteam: Boolean,
+        settings: PurgeSettings = PurgeSettings(),
+    ): String {
         val sb = StringBuilder(base.length + 64 * 1024)
-        sb.append(squareText(context))
-        sb.append("\n\n")
-        sb.append(layerText(context))
-        if (redteam) {
-            sb.append("\n\n")
-            sb.append(cardText(context))
+        if (settings.squareEnabled) {
+            val square = squareText(context)
+            if (square.isNotEmpty()) {
+                sb.append(square)
+                sb.append("\n\n")
+            }
         }
-        sb.append("\n\n")
+        if (settings.layerEnabled) {
+            val layer = layerText(context)
+            if (layer.isNotEmpty()) {
+                sb.append(layer)
+                sb.append("\n\n")
+            }
+        }
+        if (redteam && settings.redteamCardEnabled) {
+            val card = cardText(context)
+            if (card.isNotEmpty()) {
+                sb.append(card)
+                sb.append("\n\n")
+            }
+        }
         sb.append(base)
         return sb.toString()
     }

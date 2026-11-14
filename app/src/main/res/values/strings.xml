@@ -8564,4 +8564,15 @@
     <string name="thinking_config_placeholder_high_zh">例如：高</string>
     <string name="thinking_config_write_path">写入路径</string>
     <string name="thinking_config_placeholder_high">例如：high</string>
+    <!-- 二改破甲 -->
+    <string name="screen_title_purge_settings">破甲设置</string>
+    <string name="purge_section_title">破甲</string>
+    <string name="purge_item_square">正方形框架（zfx-emperor）</string>
+    <string name="purge_item_square_desc">把「正方形」操作框架前置到系统提示词最高优先级</string>
+    <string name="purge_item_layer">dsh-purge 破甲稿</string>
+    <string name="purge_item_layer_desc">前置 dsh-purge 默认注入稿（ persona 与规则）</string>
+    <string name="purge_item_redteam">红队角色卡</string>
+    <string name="purge_item_redteam_desc">命中红队意图时追加（六角色 / 五阶段 / 25 条得分）</string>
+    <string name="purge_item_permission">工具权限默认放行</string>
+    <string name="purge_item_permission_desc">源码级：ToolPermissionSystem 全局默认 ALLOW（不可在面板切换）</string>
 </resources>

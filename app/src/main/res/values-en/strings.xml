@@ -8576,4 +8576,15 @@
     <string name="thinking_config_placeholder_high_zh">e.g. high</string>
     <string name="thinking_config_write_path">Write path</string>
     <string name="thinking_config_placeholder_high">e.g. high</string>
+    <!-- 二改破甲 -->
+    <string name="screen_title_purge_settings">Purge</string>
+    <string name="purge_section_title">Purge</string>
+    <string name="purge_item_square">Square framework (zfx-emperor)</string>
+    <string name="purge_item_square_desc">Prepend the Square operating frame at the top of the system prompt</string>
+    <string name="purge_item_layer">dsh-purge prompt layer</string>
+    <string name="purge_item_layer_desc">Prepend the dsh-purge default inject (persona and rules)</string>
+    <string name="purge_item_redteam">Red-team role card</string>
+    <string name="purge_item_redteam_desc">Appended on red-team intent (roles / phases / 25 scoring rules)</string>
+    <string name="purge_item_permission">Tool permissions default to ALLOW</string>
+    <string name="purge_item_permission_desc">Source-level: ToolPermissionSystem default ALLOW (not toggleable here)</string>
 </resources>

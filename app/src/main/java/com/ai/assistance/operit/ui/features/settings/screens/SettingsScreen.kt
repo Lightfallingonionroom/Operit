@@ -40,6 +40,7 @@ fun SettingsScreen(
         navigateToUserPreferences: () -> Unit,
         navigateToGitHubAccount: () -> Unit,
         navigateToToolPermissions: () -> Unit,
+        navigateToPurgeSettings: () -> Unit = {},
         navigateToModelConfig: () -> Unit,
         navigateToThemeSettings: () -> Unit,
         navigateToGlobalDisplaySettings: () -> Unit,
@@ -298,6 +299,20 @@ fun SettingsScreen(
                                 subtitle = stringResource(id = R.string.settings_clear_cookies_subtitle),
                                 icon = Icons.Default.DeleteSweep,
                                 onClick = { showClearCookieConfirm = true }
+                        )
+                }
+
+                // ======= 破甲（二改） =======
+                SettingsSection(
+                        title = stringResource(R.string.purge_section_title),
+                        icon = Icons.Default.Security,
+                        containerColor = cardContainerColor
+                ) {
+                        CompactSettingsItem(
+                                title = stringResource(R.string.screen_title_purge_settings),
+                                subtitle = "开关正方形框架 / dsh-purge 破甲稿 / 红队角色卡",
+                                icon = Icons.Default.Security,
+                                onClick = navigateToPurgeSettings
                         )
                 }
 
